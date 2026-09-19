@@ -319,7 +319,7 @@ foreach ($assignments as $a) {
   <a class="side-link" href="#submit-progress"><span class="icon">＋</span>Record Coverage</a>
   <a class="side-link" href="#history"><span class="icon">◷</span>Coverage History</a>
   <a class="side-link" href="profile.php"><span class="icon">◉</span>Profile</a>
-  <a class="side-link" href="change_password.php"><span class="icon">▣</span>Change Password</a>
+  <a class="side-link" href="../change_password.php"><span class="icon">▣</span>Change Password</a>
   <a class="side-link" href="../auth/logout.php"><span class="icon">↪</span>Logout</a>
   <div class="side-bottom"><div style="font-size:20px;margin-bottom:6px">⌂</div>HTTTC KUMBA</div>
 </aside>

@@ -1379,7 +1379,7 @@ Dashboard
 
 <a
 class="side-link"
-href="user.php"
+href="users.php"
 >
 
 <span class="icon">
@@ -1393,7 +1393,7 @@ Users
 
 <a
 class="side-link"
-href="department.php"
+href="departments.php"
 >
 
 <span class="icon">

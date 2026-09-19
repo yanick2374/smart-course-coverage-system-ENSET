@@ -1347,7 +1347,7 @@ Courses
 
 
 <a
-    href="assign_course.php"
+    href="assignments.php"
     class="menu-link"
 >
 
@@ -1361,7 +1361,7 @@ Course Assignment
 
 
 <a
-    href="assigned_courses.php"
+    href="assignments.php"
     class="menu-link"
 >
 

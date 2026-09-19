@@ -309,7 +309,7 @@ a{text-decoration:none;color:inherit}.layout{display:flex;min-height:100vh}.side
     <div class="nav-title">Main Menu</div>
     <nav class="nav">
         <a href="dashboard.php"><span class="icon">⌂</span> Dashboard</a>
-        <a href="user.php" class="active"><span class="icon">♙</span> Users</a>
+        <a href="users.php" class="active"><span class="icon">♙</span> Users</a>
         <a href="departments.php"><span class="icon">▦</span> Departments</a>
         <a href="programs.php"><span class="icon">▤</span> Programs</a>
         <a href="courses.php"><span class="icon">▣</span> Courses</a>

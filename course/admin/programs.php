@@ -1339,7 +1339,7 @@ MAIN MENU
 
 <a
     class="side-link"
-    href="user.php"
+    href="users.php"
 >
     <span class="icon">♟</span>
     Users
@@ -1348,7 +1348,7 @@ MAIN MENU
 
 <a
     class="side-link"
-    href="department.php"
+    href="departments.php"
 >
     <span class="icon">▣</span>
     Departments

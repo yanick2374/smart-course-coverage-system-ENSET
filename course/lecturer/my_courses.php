@@ -1577,7 +1577,7 @@ select{
 
     <a
         class="side-link"
-        href="dashboard.php#history"
+        href="coverage.php"
     >
 
         <span class="side-icon">
@@ -1605,7 +1605,7 @@ select{
 
     <a
         class="side-link"
-        href="change_password.php"
+        href="../change_password.php"
     >
 
         <span class="side-icon">

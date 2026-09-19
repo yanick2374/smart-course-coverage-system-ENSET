@@ -99,7 +99,7 @@ try {
 } catch (PDOException $ex) {
     // Keep the interface available even if an optional dashboard query fails.
 }
-
+$coverageChart = [];
 $chartMax = max(100, ...array_map(fn($r) => (float)$r['coverage'], $coverageChart ?: [['coverage' => 0]]));
 $totalStatus = max(1, array_sum($statusCounts));
 $excellentPct = round(($statusCounts['Excellent'] / $totalStatus) * 100, 1);

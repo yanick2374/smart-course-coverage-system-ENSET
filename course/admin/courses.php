@@ -295,8 +295,8 @@ td{font-size:11px}td:first-child,th:first-child{padding-left:20px}
 
     <div class="menu-title">MAIN MENU</div>
     <a class="side-link" href="dashboard.php"><span class="icon">⌂</span>Dashboard</a>
-    <a class="side-link" href="user.php"><span class="icon">♟</span>Users</a>
-    <a class="side-link" href="department.php"><span class="icon">▣</span>Departments</a>
+    <a class="side-link" href="users.php"><span class="icon">♟</span>Users</a>
+    <a class="side-link" href="departments.php"><span class="icon">▣</span>Departments</a>
     <a class="side-link" href="programs.php"><span class="icon">▤</span>Programs</a>
     <a class="side-link active" href="courses.php"><span class="icon">▦</span>Courses</a>
     <a class="side-link" href="academic_years.php"><span class="icon">◫</span>Academic Years</a>

@@ -146,6 +146,7 @@ $error = $_SESSION['error'] ?? ''; unset($_SESSION['error']);
 <a class="side-link active" href="dashboard.php"><span class="icon">⌂</span>Dashboard</a>
 <a class="side-link" href="dashboard.php#assign-course"><span class="icon">＋</span>Assign Course</a>
 <a class="side-link" href="assignments.php"><span class="icon">▤</span>Assigned Courses</a>
+<a class="side-link" href="course_topics.php"><span class="icon">▤</span>Course Topics</a>
 <a class="side-link" href="coverage.php"><span class="icon">◫</span>Coverage Review</a>
 <a class="side-link" href="reports.php"><span class="icon">▥</span>Reports</a>
 <a class="side-link" href="lecturers.php"><span class="icon">♟</span>Lecturers</a>
