@@ -13,19 +13,34 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 }
 
 if (!isset($_SESSION['user_id'])) {
-    header('Location: ../login.php');
+    header('Location: ../index.php');
     exit;
 }
 
 $role = strtolower(trim($_SESSION['role'] ?? ''));
-if ($role !== 'hod') {
+if (!in_array($role, ['hod', 'head of department'], true)) {
     http_response_code(403);
     die('Access denied. This page is for Heads of Department only.');
 }
 
-$departmentId = (int)($_SESSION['department_id'] ?? 0);
+$departmentId = 0;
+$departmentName = $_SESSION['department_name'] ?? 'Academic Department';
 $message = '';
 $error = '';
+
+try {
+    $stmt = $pdo->prepare("SELECT u.department_id, d.department_name
+                           FROM users u
+                           LEFT JOIN departments d ON d.department_id = u.department_id
+                           WHERE u.user_id = ?
+                           LIMIT 1");
+    $stmt->execute([(int)$_SESSION['user_id']]);
+    $hod = $stmt->fetch(PDO::FETCH_ASSOC);
+    $departmentId = (int)($hod['department_id'] ?? 0);
+    $departmentName = $hod['department_name'] ?: $departmentName;
+} catch (PDOException $e) {
+    $error = 'Unable to determine your department. Please contact the Administrator.';
+}
 
 /* ---------- CSRF ---------- */
 if (empty($_SESSION['course_topics_csrf'])) {
@@ -49,8 +64,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delet
     } else {
         $topicId = (int)($_POST['topic_id'] ?? 0);
         try {
-            $stmt = $pdo->prepare("DELETE FROM course_topics WHERE topic_id = :topic_id");
-            $stmt->execute([':topic_id' => $topicId]);
+                        $stmt = $pdo->prepare("DELETE ct
+                                                                     FROM cousre_topics ct
+                                                                     INNER JOIN courses c ON c.course_id = ct.course_id
+                                                                     WHERE ct.topic_id = :topic_id
+                                                                         AND c.department_id = :department_id");
+                        $stmt->execute([
+                                ':topic_id' => $topicId,
+                                ':department_id' => $departmentId
+                        ]);
             $message = $stmt->rowCount() ? 'Course topic deleted successfully.' : 'Topic was not found.';
         } catch (PDOException $e) {
             $error = 'Unable to delete the selected course topic.';
@@ -76,13 +98,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add')
         } else {
             try {
                 $courseSql = "SELECT course_id FROM courses WHERE course_id = :course_id";
-                if ($hasCourseDepartment && $departmentId > 0) {
+                if ($hasCourseDepartment) {
                     $courseSql .= " AND department_id = :department_id";
                 }
                 $courseSql .= " LIMIT 1";
                 $check = $pdo->prepare($courseSql);
                 $params = [':course_id' => $courseId];
-                if ($hasCourseDepartment && $departmentId > 0) {
+                if ($hasCourseDepartment) {
                     $params[':department_id'] = $departmentId;
                 }
                 $check->execute($params);
@@ -90,7 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add')
                 if (!$check->fetchColumn()) {
                     $error = 'The selected course is not available for this department.';
                 } else {
-                    $stmt = $pdo->prepare("INSERT INTO course_topics
+                    $stmt = $pdo->prepare("INSERT INTO cousre_topics
                         (course_id, topic_number, topic_title, description, expected_hours)
                         VALUES (:course_id, :topic_number, :topic_title, :description, :expected_hours)");
                     $stmt->execute([
@@ -100,6 +122,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add')
                         ':description' => $description,
                         ':expected_hours' => $expectedHours
                     ]);
+
+                    try {
+                        $notify = $pdo->prepare("SELECT DISTINCT u.user_id, c.course_code
+                                                 FROM course_assgnment ca
+                                                 INNER JOIN lecturers l ON l.lecturer_id = ca.lecturer_id
+                                                 INNER JOIN users u ON LOWER(u.email) = LOWER(l.email)
+                                                 INNER JOIN courses c ON c.course_id = ca.course_id
+                                                 WHERE ca.course_id = ?");
+                        $notify->execute([$courseId]);
+                        $notification = $pdo->prepare("INSERT INTO notifications
+                            (user_id, title, message, notification_type, is_read, created_at)
+                            VALUES (?, 0, ?, 'topic', 0, NOW())");
+                        while ($recipient = $notify->fetch(PDO::FETCH_ASSOC)) {
+                            $notification->execute([
+                                (int)$recipient['user_id'],
+                                'An approved topic was added to ' . $recipient['course_code'] . '.'
+                            ]);
+                        }
+                    } catch (PDOException $ignore) {
+                    }
                     $message = 'Course topic added successfully.';
                 }
             } catch (PDOException $e) {
@@ -113,12 +155,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add')
 $courses = [];
 try {
     $courseSql = "SELECT course_id, course_code, course_name FROM courses";
-    if ($hasCourseDepartment && $departmentId > 0) {
+    if ($hasCourseDepartment) {
         $courseSql .= " WHERE department_id = :department_id";
     }
     $courseSql .= " ORDER BY course_code, course_name";
     $stmt = $pdo->prepare($courseSql);
-    if ($hasCourseDepartment && $departmentId > 0) {
+    if ($hasCourseDepartment) {
         $stmt->execute([':department_id' => $departmentId]);
     } else {
         $stmt->execute();
@@ -137,31 +179,30 @@ try {
             ct.topic_title,
             ct.description,
             ct.expected_hours,
-            ct.created_at,
             c.course_code,
             c.course_name
-        FROM course_topics ct
+        FROM cousre_topics ct
         INNER JOIN courses c ON c.course_id = ct.course_id";
-    if ($hasCourseDepartment && $departmentId > 0) {
+    if ($hasCourseDepartment) {
         $topicSql .= " WHERE c.department_id = :department_id";
     }
     $topicSql .= " ORDER BY c.course_code, ct.topic_number, ct.topic_id";
     $stmt = $pdo->prepare($topicSql);
-    if ($hasCourseDepartment && $departmentId > 0) {
+    if ($hasCourseDepartment) {
         $stmt->execute([':department_id' => $departmentId]);
     } else {
         $stmt->execute();
     }
     $topics = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    $error = 'Could not load course topics. Check your course_topics table.';
+    $error = 'Could not load course topics. Check your cousre_topics table.';
 }
 
 $totalCourses = count($courses);
 $totalTopics = count($topics);
 $totalHours = array_sum(array_map(fn($row) => (float)($row['expected_hours'] ?? 0), $topics));
 $hodName = htmlspecialchars($_SESSION['full_name'] ?? 'Head of Department', ENT_QUOTES, 'UTF-8');
-$departmentName = htmlspecialchars($_SESSION['department_name'] ?? 'Academic Department', ENT_QUOTES, 'UTF-8');
+$departmentName = htmlspecialchars($departmentName, ENT_QUOTES, 'UTF-8');
 $search = trim($_GET['search'] ?? '');
 ?>
 <!DOCTYPE html>

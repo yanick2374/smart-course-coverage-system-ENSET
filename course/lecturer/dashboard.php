@@ -75,6 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
 
     $assignmentId = (int)($_POST['assignment_id'] ?? 0);
     $topicId = (int)($_POST['topic_id'] ?? 0);
+    $schemeTopicId = (int)($_POST['scheme_topic_id'] ?? 0);
     $dateTaught = trim($_POST['date_taught'] ?? '');
     $hoursTaught = (float)($_POST['hours_taught'] ?? 0);
     $coverageStatus = trim($_POST['coverage_status'] ?? '');
@@ -92,6 +93,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
 
     try {
         // Make sure this assignment belongs to the logged-in lecturer.
+        // First validate the course and topic themselves.  A scheme topic is optional:
+        // when one is not selected, it is created or linked just below.  Joining it here
+        // made every submission with the default (empty) scheme-topic option fail.
         $check = $pdo->prepare("SELECT ca.assignment_id, ca.course_id, c.course_code, c.course_name,
                                        ct.topic_id, ct.topic_title, ct.expected_hours
                                 FROM course_assgnment ca
@@ -108,6 +112,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
             redirectWith('error', 'You can only submit progress for courses and topics assigned to you.');
         }
 
+        if ($schemeTopicId) {
+          // Do not allow a scheme topic belonging to another lecturer's assignment.
+          $schemeCheck = $pdo->prepare("SELECT scheme_topic_id
+                                        FROM course_scheme_topics
+                                        WHERE scheme_topic_id = ? AND assignment_id = ?
+                                        LIMIT 1");
+          $schemeCheck->execute([$schemeTopicId, $assignmentId]);
+          if (!$schemeCheck->fetchColumn()) {
+              redirectWith('error', 'The selected scheme topic does not belong to this course assignment.');
+          }
+        } else {
+          $schemeCheck = $pdo->prepare("SELECT scheme_topic_id
+                          FROM course_scheme_topics
+                          WHERE assignment_id = ?
+                          AND topic = ?
+                          LIMIT 1");
+          $schemeCheck->execute([$assignmentId, $valid['topic_title']]);
+          $schemeTopicId = (int)$schemeCheck->fetchColumn();
+
+          if (!$schemeTopicId) {
+            $schemeInsert = $pdo->prepare("INSERT INTO course_scheme_topics
+              (assignment_id, topic, week_number, status, created_at)
+              VALUES (?, ?, ?, 'Approved', NOW())");
+            $schemeInsert->execute([
+              $assignmentId,
+              $valid['topic_title'],
+              $valid['topic_id']
+            ]);
+            $schemeTopicId = (int)$pdo->lastInsertId();
+          }
+        }
+
         // Prevent a single topic from being pushed beyond its expected hours.
         $sumStmt = $pdo->prepare("SELECT COALESCE(SUM(hours_taught),0)
                                   FROM course_coverage
@@ -118,26 +154,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
 
         if ($expectedHours > 0 && ($alreadyTaught + $hoursTaught) > $expectedHours) {
             $remaining = max(0, $expectedHours - $alreadyTaught);
-            redirectWith('error', 'This topic has ' . number_format($remaining, 2) . ' hour(s) remaining. Reduce the hours for this entry.');
+            if ($remaining <= 0) {
+                redirectWith('error', 'This topic is already fully covered. Please select another topic.');
+            }
+            redirectWith('error', 'This topic has ' . number_format($remaining, 2) . ' hour(s) remaining. Enter no more than that amount.');
         }
 
         $pdo->beginTransaction();
 
-        // The supplied SQL makes coverage_id AUTO_INCREMENT. If the local database was created
-        // without AUTO_INCREMENT, repair it before inserting rather than manually generating IDs.
-        try {
-            $pdo->exec("ALTER TABLE course_coverage MODIFY coverage_id INT(11) NOT NULL AUTO_INCREMENT");
-        } catch (PDOException $ignore) {
-            // Existing installations with sufficient privileges continue normally.
-        }
-
         $insert = $pdo->prepare("INSERT INTO course_coverage
-            (assignment_id, topic_id, date_taught, hours_taught, coverage_status, remarks, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+            (assignment_id, topic_id, date_taught, scheme_topic_id, hours_taught, coverage_status, remarks, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())");
         $insert->execute([
             $assignmentId,
             $topicId,
             $dateTaught,
+            $schemeTopicId,
             number_format($hoursTaught, 2, '.', ''),
             $coverageStatus,
             $remarks,
@@ -188,6 +220,7 @@ $stats = [
 ];
 $assignments = [];
 $topicsByCourse = [];
+$schemeTopicsByAssignment = [];
 $departments = [];
 $recentProgress = [];
 $courseProgress = [];
@@ -215,6 +248,16 @@ try {
                                ORDER BY ca.assignment_id DESC");
         $stmt->execute([$lecturerId]);
         $assignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $schemeStmt = $pdo->prepare("SELECT cst.scheme_topic_id, cst.assignment_id, cst.topic, cst.week_number, cst.status
+                                     FROM course_scheme_topics cst
+                                     INNER JOIN course_assgnment ca ON ca.assignment_id = cst.assignment_id
+                                     WHERE ca.lecturer_id = ?
+                                     ORDER BY cst.assignment_id, CAST(cst.week_number AS UNSIGNED), cst.scheme_topic_id");
+        $schemeStmt->execute([$lecturerId]);
+        while ($schemeTopic = $schemeStmt->fetch(PDO::FETCH_ASSOC)) {
+            $schemeTopicsByAssignment[(int)$schemeTopic['assignment_id']][] = $schemeTopic;
+        }
 
         $topicStmt = $pdo->prepare("SELECT topic_id, course_id, topic_number, topic_title, description, expected_hours
                                     FROM cousre_topics
@@ -296,6 +339,18 @@ foreach ($assignments as $a) {
         ];
     }
 }
+$schemeTopicJson = [];
+foreach ($schemeTopicsByAssignment as $aid => $schemeTopics) {
+    $schemeTopicJson[$aid] = array_map(static function (array $schemeTopic): array {
+        return [
+            'scheme_topic_id' => (int)$schemeTopic['scheme_topic_id'],
+            'topic' => $schemeTopic['topic'],
+            'week_number' => $schemeTopic['week_number'],
+            'status' => $schemeTopic['status']
+        ];
+    }, $schemeTopics);
+}
+$selectedAssignmentId = (int)($_GET['assignment_id'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -306,6 +361,13 @@ foreach ($assignments as $a) {
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f5f8f6;color:#173128;font-size:13px}.app{display:flex;min-height:100vh}.sidebar{width:245px;background:#0d5b3f;color:#fff;position:fixed;left:0;top:0;bottom:0;padding:22px 15px;display:flex;flex-direction:column;z-index:20}.brand{display:flex;align-items:center;gap:11px;padding:4px 8px 24px;border-bottom:1px solid rgba(255,255,255,.16)}.brand img{width:48px;height:48px;object-fit:contain;background:#fff;border-radius:50%;padding:4px}.brand strong{font-size:12px;line-height:1.35}.brand span{display:block;font-size:10px;opacity:.75;margin-top:2px}.menu-title{font-size:9px;letter-spacing:1.2px;opacity:.55;margin:25px 10px 9px}.side-link{display:flex;align-items:center;gap:11px;text-decoration:none;color:#eaf7f1;padding:11px 12px;border-radius:7px;margin:3px 0;font-size:12px}.side-link:hover,.side-link.active{background:rgba(255,255,255,.13)}.icon{width:18px;text-align:center;opacity:.9}.side-bottom{margin-top:auto;border-top:1px solid rgba(255,255,255,.14);padding:18px 8px 4px;font-size:9px;opacity:.65;text-align:center}.main{margin-left:245px;flex:1;min-width:0}.topbar{height:82px;background:#fff;border-bottom:1px solid #e4ebe7;display:flex;justify-content:space-between;align-items:center;padding:0 30px;position:sticky;top:0;z-index:10}.top-left{display:flex;align-items:center;gap:14px}.mobile-menu{display:none;border:0;background:none;font-size:22px}.heading h1{font-size:21px;margin:0;color:#18382d}.heading p{margin:5px 0 0;color:#7c8d86;font-size:11px}.profile{display:flex;align-items:center;gap:10px}.bell{font-size:18px;color:#547168;margin-right:7px}.avatar{width:38px;height:38px;border-radius:50%;object-fit:contain;background:#f1f5f2;padding:4px}.profile-text strong{display:block;font-size:11px}.profile-text span{display:block;font-size:10px;color:#8a9893;margin-top:3px}.content{padding:25px 30px 35px}.filter-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.department{background:#e9f4ee;border:1px solid #d5e8dd;border-radius:8px;padding:10px 13px;color:#40665a;font-size:11px}.select,.field select,.field input,.field textarea{width:100%;border:1px solid #dce6e1;border-radius:7px;background:#fff;padding:11px 12px;font-size:12px;color:#29483d;outline:none}.filter-row .select{width:230px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:20px}.card{background:#fff;border:1px solid #e4ebe7;border-radius:9px;padding:16px;box-shadow:0 2px 8px rgba(25,70,53,.03)}.card-top{display:flex;gap:12px;align-items:center}.card-icon{width:42px;height:42px;border-radius:8px;background:#e8f4ee;color:#0b704a;display:grid;place-items:center;font-size:19px}.card-label{font-size:9px;color:#87968f;letter-spacing:.5px}.card-number{font-size:23px;font-weight:700;color:#183b2f;margin-top:5px}.card-link{display:flex;justify-content:space-between;margin-top:13px;padding-top:11px;border-top:1px solid #edf2ef;color:#0b704a;text-decoration:none;font-size:10px;font-weight:600}.grid{display:grid;grid-template-columns:1.65fr 1fr;gap:18px;margin-bottom:18px}.panel{background:#fff;border:1px solid #e4ebe7;border-radius:9px;box-shadow:0 2px 8px rgba(25,70,53,.03);overflow:hidden}.panel-head{padding:17px 20px;border-bottom:1px solid #edf2ef;display:flex;justify-content:space-between;align-items:center}.panel-head h2{margin:0;font-size:11px;letter-spacing:.45px;color:#23453a}.panel-head p{margin:5px 0 0;font-size:10px;color:#84928c}.assign-form{padding:20px}.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.field label{display:block;font-size:9px;font-weight:700;letter-spacing:.4px;color:#75877f;margin-bottom:6px}.field textarea{min-height:75px;resize:vertical}.field.full{grid-column:1/-1}.btn{border:0;background:#0d6848;color:#fff;border-radius:7px;padding:11px 17px;font-size:11px;font-weight:700;cursor:pointer;margin-top:15px}.btn:hover{background:#09583d}.btn.secondary{background:#edf5f1;color:#0d6848}.notice{padding:12px 14px;border-radius:7px;margin-bottom:17px;font-size:11px}.success{background:#e7f6ec;border:1px solid #cbe9d5;color:#24683c}.error{background:#fff0ef;border:1px solid #f0d1ce;color:#9c3b32}.overview{padding:12px 20px 20px}.overview-row{display:flex;justify-content:space-between;align-items:center;padding:13px 0;border-bottom:1px solid #edf2ef;font-size:11px}.overview-row:last-child{border-bottom:0}.overview-row strong{color:#183d31}.progress{height:7px;background:#edf2ef;border-radius:99px;overflow:hidden;min-width:90px}.progress span{display:block;height:100%;background:#0d704b;border-radius:99px}.mini-progress{display:flex;align-items:center;gap:9px}.pill{display:inline-block;padding:4px 8px;border-radius:20px;font-size:9px;font-weight:700}.good{background:#e7f6ec;color:#267044}.average{background:#fff6df;color:#946a18}.low{background:#fff0ef;color:#a13b31}.table-wrap{overflow-x:auto}.data-table{width:100%;border-collapse:collapse;min-width:850px}.data-table th{font-size:8px;letter-spacing:.5px;color:#899791;background:#fafcfa;text-align:left;padding:11px 14px;border-bottom:1px solid #e7eeea}.data-table td{font-size:10px;padding:13px 14px;border-bottom:1px solid #eef3f0;color:#435c53;vertical-align:middle}.data-table tr:last-child td{border-bottom:0}.empty{text-align:center;padding:25px!important;color:#8b9994}.footer{padding:16px 30px;border-top:1px solid #e4ebe7;color:#8a9892;font-size:9px;display:flex;justify-content:space-between}.footer strong{color:#5e746a}.department-list{padding:10px 20px 18px;max-height:250px;overflow:auto}.dept{padding:11px 0;border-bottom:1px solid #edf2ef}.dept:last-child{border-bottom:0}.dept strong{display:block;font-size:11px}.dept span{display:block;font-size:9px;color:#87958f;margin-top:3px}.course-name{font-weight:700;color:#29483d}.course-sub{font-size:9px;color:#88968f;margin-top:3px}.no-profile{padding:20px;background:#fff4e5;border:1px solid #f0dfbd;border-radius:8px;color:#856326;margin-bottom:18px}.help{font-size:9px;color:#87958f;margin-top:5px;line-height:1.5}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:800px){.sidebar{transform:translateX(-100%);transition:.2s}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.mobile-menu{display:block}.topbar{padding:0 16px}.profile-text{display:none}.content{padding:18px 15px}.filter-row{gap:10px;align-items:stretch;flex-direction:column}.filter-row .select{width:100%}.cards{grid-template-columns:1fr 1fr}.footer{padding:14px 15px;gap:10px;flex-direction:column}.form-grid{grid-template-columns:1fr}}@media(max-width:500px){.cards{grid-template-columns:1fr}.topbar{height:72px}.heading h1{font-size:17px}.bell{display:none}}
+/* Subtle University branding for the clickable dashboard summary cards. */
+.card{background-color:#fff;background-image:linear-gradient(rgba(255,255,255,.92),rgba(255,255,255,.92)),url('../assets/images/ub-logo.png');background-repeat:no-repeat;background-position:center,right 13px bottom 12px;background-size:auto,64px}
+.brand strong{font-size:16px;line-height:1.2}.brand span{font-size:12px;margin-top:4px}.menu-title{font-size:11px;margin-top:28px}.side-link{font-size:14px;padding:13px 12px}.icon{width:20px}.side-bottom{font-size:11px}
+.sidebar{overflow-y:auto;overscroll-behavior:contain}.side-bottom{margin-top:24px;flex-shrink:0}
+.sidebar{width:250px;font-family:Inter,"Segoe UI",Arial,sans-serif}.main{margin-left:250px}.brand strong{font-size:16px;line-height:1.08}.brand span{font-size:12px;font-weight:600}.menu-title{font-size:12px;font-weight:700;margin:24px 20px 10px}.side-link{gap:13px;margin:4px 9px;padding:12px 13px;border-radius:8px;font-size:14px;font-weight:600}.icon{width:20px;font-size:18px}
+.heading h1{font-size:26px}.heading p{font-size:14px}.profile-text strong{font-size:14px}.profile-text span{font-size:12px}.department,.select{font-size:13px}.card-label{font-size:12px}.card-number{font-size:28px}.card-link{font-size:12px}.panel-head h2{font-size:15px}.panel-head p{font-size:11px}.field label{font-size:11px}.select,.field select,.field input,.field textarea{font-size:14px;padding:12px}.help{font-size:10px}.overview-row{font-size:12px}.dept strong{font-size:12px}.dept span{font-size:10px}.btn{font-size:13px}
+.data-table th{font-size:10px;padding:13px 14px}.data-table td{font-size:13px;padding:15px 14px}.course-name{font-size:13px}.course-sub{font-size:11px}.pill{font-size:11px;padding:5px 10px}.footer{font-size:11px}
 </style>
 </head>
 <body>
@@ -316,8 +378,8 @@ foreach ($assignments as $a) {
   <a class="side-link active" href="dashboard.php"><span class="icon">⌂</span>Dashboard</a>
   <a class="side-link" href="my_courses.php"><span class="icon">▤</span>My Courses</a>
   <a class="side-link" href="coverage.php"><span class="icon">◫</span>Course Progress</a>
-  <a class="side-link" href="#submit-progress"><span class="icon">＋</span>Record Coverage</a>
-  <a class="side-link" href="#history"><span class="icon">◷</span>Coverage History</a>
+  <a class="side-link" href="record_coverage.php"><span class="icon">＋</span>Record Coverage</a>
+    <a class="side-link" href="coverage_history.php"><span class="icon">◷</span>Coverage History</a>
   <a class="side-link" href="profile.php"><span class="icon">◉</span>Profile</a>
   <a class="side-link" href="../change_password.php"><span class="icon">▣</span>Change Password</a>
   <a class="side-link" href="../auth/logout.php"><span class="icon">↪</span>Logout</a>
@@ -352,6 +414,7 @@ foreach ($assignments as $a) {
     <div class="form-grid">
       <div class="field full"><label>ASSIGNED COURSE</label><select name="assignment_id" id="assignmentSelect" required><option value="">Select one of your assigned courses</option><?php foreach($assignments as $a): ?><option value="<?=$a['assignment_id']?>" data-session="<?=e($a['session_id'])?>"><?=e($a['course_code'].' - '.$a['course_name'].' | '.$a['program_name'].' | '.$a['level'].' | '.$a['semester'])?></option><?php endforeach; ?></select></div>
       <div class="field full"><label>TOPIC TAUGHT</label><select name="topic_id" id="topicSelect" required disabled><option value="">Select a course first</option></select><div class="help">Only topics belonging to the selected assigned course are shown.</div></div>
+    <div class="field full"><label>ASSIGNMENT SCHEME TOPIC</label><select name="scheme_topic_id" id="schemeTopicSelect" disabled><option value="">Select a course first</option></select><div class="help">Select an existing scheme topic when available. If none exists, the system links this record to the approved topic automatically.</div></div>
       <div class="field"><label>DATE TAUGHT</label><input type="date" name="date_taught" value="<?=date('Y-m-d')?>" required></div>
       <div class="field"><label>HOURS TAUGHT</label><input type="number" name="hours_taught" min="0.25" max="24" step="0.25" placeholder="e.g. 2.00" required></div>
       <div class="field"><label>COVERAGE STATUS</label><select name="coverage_status" required><option value="">Select status</option><option value="Completed">Completed</option><option value="In Progress">In Progress</option><option value="Partially Covered">Partially Covered</option></select></div>
@@ -397,20 +460,29 @@ foreach ($assignments as $a) {
 </main></div>
 <script>
 const topicsByAssignment = <?=json_encode($topicJson, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
+const schemeTopicsByAssignment = <?=json_encode($schemeTopicJson, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
 const assignmentSelect = document.getElementById('assignmentSelect');
 const topicSelect = document.getElementById('topicSelect');
+const schemeTopicSelect = document.getElementById('schemeTopicSelect');
 const sessionFilter = document.getElementById('sessionFilter');
 function populateTopics(){
   const aid = assignmentSelect ? assignmentSelect.value : '';
   topicSelect.innerHTML = '';
-  if(!aid){ topicSelect.disabled=true; topicSelect.add(new Option('Select a course first','')); return; }
+    schemeTopicSelect.innerHTML = '';
+    if(!aid){ topicSelect.disabled=true; schemeTopicSelect.disabled=true; topicSelect.add(new Option('Select a course first','')); schemeTopicSelect.add(new Option('Select a course first','')); return; }
   topicSelect.disabled=false;
+    schemeTopicSelect.disabled=false;
   topicSelect.add(new Option('Select topic taught',''));
+    schemeTopicSelect.add(new Option('Use selected approved topic',''));
   (topicsByAssignment[aid] || []).forEach(t => {
     topicSelect.add(new Option('Topic '+t.topic_number+' - '+t.topic_title+' (Expected '+t.expected_hours+'h)', t.topic_id));
   });
+    (schemeTopicsByAssignment[aid] || []).forEach(t => {
+        schemeTopicSelect.add(new Option('Week '+t.week_number+' - '+t.topic+' ('+t.status+')', t.scheme_topic_id));
+    });
 }
 if(assignmentSelect){ assignmentSelect.addEventListener('change', populateTopics); }
+if(assignmentSelect && <?= $selectedAssignmentId ?> > 0){ assignmentSelect.value = '<?= $selectedAssignmentId ?>'; populateTopics(); }
 if(sessionFilter){
   sessionFilter.addEventListener('change', function(){
     const value=this.value;

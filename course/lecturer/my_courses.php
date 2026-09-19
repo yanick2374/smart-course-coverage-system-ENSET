@@ -1577,7 +1577,7 @@ select{
 
     <a
         class="side-link"
-        href="coverage.php"
+        href="coverage_history.php"
     >
 
         <span class="side-icon">

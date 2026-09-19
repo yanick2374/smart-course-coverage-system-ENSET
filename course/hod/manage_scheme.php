@@ -360,7 +360,7 @@ if (
                 FROM course_scheme_topics
 
                 WHERE assignment_id = ?
-                AND topic_number = ?
+                AND week_number = ?
 
                 LIMIT 1
             ");
@@ -398,8 +398,9 @@ if (
                 INSERT INTO course_scheme_topics
                 (
                     assignment_id,
-                    topic_number,
-                    topic_title,
+                    topic,
+                    week_number,
+                    status,
                     created_at
                 )
 
@@ -408,14 +409,15 @@ if (
                     ?,
                     ?,
                     ?,
+                    'Approved',
                     NOW()
                 )
             ");
 
         $stmt->execute([
             $assignmentId,
-            $topicNumber,
-            $topicTitle
+            $topicTitle,
+            $topicNumber
         ]);
 
 
@@ -627,7 +629,7 @@ if (
 
                 WHERE assignment_id = ?
 
-                AND topic_number = ?
+                AND week_number = ?
 
                 AND scheme_topic_id != ?
 
@@ -666,8 +668,8 @@ if (
                 UPDATE course_scheme_topics
 
                 SET
-                    topic_number = ?,
-                    topic_title = ?
+                    topic = ?,
+                    week_number = ?
 
                 WHERE scheme_topic_id = ?
 
@@ -675,8 +677,8 @@ if (
             ");
 
         $stmt->execute([
-            $topicNumber,
             $topicTitle,
+            $topicNumber,
             $schemeTopicId,
             $assignmentId
         ]);
@@ -718,15 +720,15 @@ try {
 
                 scheme_topic_id,
                 assignment_id,
-                topic_number,
-                topic_title,
+                week_number,
+                topic,
                 created_at
 
             FROM course_scheme_topics
 
             WHERE assignment_id = ?
 
-            ORDER BY topic_number ASC
+            ORDER BY CAST(week_number AS UNSIGNED) ASC, scheme_topic_id ASC
         ");
 
     $stmt->execute([
@@ -1825,7 +1827,7 @@ td{
                         <td class="number">
 
                             <?= (int)
-                                $topic['topic_number']
+                                $topic['week_number']
                             ?>
 
                         </td>
@@ -1834,7 +1836,7 @@ td{
                         <td class="topic">
 
                             <?= e(
-                                $topic['topic_title']
+                                $topic['topic']
                             ) ?>
 
                         </td>

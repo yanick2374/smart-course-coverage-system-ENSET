@@ -74,13 +74,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'assig
 
         $insert = $pdo->prepare("INSERT INTO course_assgnment (course_id, lecturer_id, program_id, session_id, semester, level) VALUES (?, ?, ?, ?, ?, ?)");
         $insert->execute([$courseId, $lecturerId, $programId, $sessionId, $semester, $level]);
+
+        try {
+            $notifyUser = $pdo->prepare("SELECT u.user_id, c.course_code
+                                         FROM users u
+                                         INNER JOIN lecturers l ON LOWER(l.email) = LOWER(u.email)
+                                         INNER JOIN courses c ON c.course_id = ?
+                                         WHERE l.lecturer_id = ?
+                                         LIMIT 1");
+            $notifyUser->execute([$courseId, $lecturerId]);
+            $recipient = $notifyUser->fetch(PDO::FETCH_ASSOC);
+            if ($recipient) {
+                $notification = $pdo->prepare("INSERT INTO notifications
+                    (user_id, title, message, notification_type, is_read, created_at)
+                    VALUES (?, 0, ?, 'assignment', 0, NOW())");
+                $notification->execute([
+                    (int)$recipient['user_id'],
+                    'You have been assigned ' . $recipient['course_code'] . ' for ' . $semester . '.'
+                ]);
+            }
+        } catch (PDOException $ignore) {
+        }
         redirectWith('success', 'Course assigned successfully.');
     } catch (PDOException $e) {
         redirectWith('error', 'The course could not be assigned. Database error: ' . $e->getMessage());
     }
 }
 
-$stats = ['lecturers'=>0,'courses'=>0,'assignments'=>0,'avg_coverage'=>0];
+$stats = [
+    'lecturers' => 0,
+    'courses' => 0,
+    'assignments' => 0,
+    'avg_coverage' => 0,
+    'completed_courses' => 0,
+    'in_progress_courses' => 0,
+    'attention_courses' => 0
+];
 $assignments = [];
 $recentAssignments = [];
 $courses = $lecturers = $programs = $sessions = [];
@@ -107,6 +136,7 @@ try {
     if ($departmentId) {
         $sql = "SELECT ca.assignment_id, c.course_code, c.course_name, l.full_name lecturer_name, l.staff_no, p.program_name, s.session_name, ca.semester, ca.level,
                        COALESCE((SELECT SUM(cc.hours_taught) FROM course_coverage cc WHERE cc.assignment_id = ca.assignment_id),0) taught_hours,
+                       s.end_date,
                        COALESCE((SELECT SUM(ct.expected_hours) FROM cousre_topics ct WHERE ct.course_id = c.course_id),0) expected_hours
                 FROM course_assgnment ca
                 INNER JOIN courses c ON c.course_id = ca.course_id
@@ -114,11 +144,23 @@ try {
                 INNER JOIN programs p ON p.program_id = ca.program_id
                 INNER JOIN academic_session s ON s.session_id = ca.session_id
                 WHERE c.department_id = ?
-                ORDER BY ca.assignment_id DESC LIMIT 8";
-        $stmt = $pdo->prepare($sql); $stmt->execute([$departmentId]); $recentAssignments = $stmt->fetchAll();
+                ORDER BY ca.assignment_id DESC";
+        $stmt = $pdo->prepare($sql); $stmt->execute([$departmentId]); $allAssignments = $stmt->fetchAll();
         $coverageValues=[];
-        foreach($recentAssignments as &$r){ $r['coverage']=(float)$r['expected_hours']>0?min(100,((float)$r['taught_hours']/(float)$r['expected_hours'])*100):0; $coverageValues[]=$r['coverage']; }
+        foreach($allAssignments as &$r){
+            $r['coverage']=(float)$r['expected_hours']>0?min(100,((float)$r['taught_hours']/(float)$r['expected_hours'])*100):0;
+            $r['status'] = $r['coverage'] >= 100
+                ? 'Completed'
+                : ($r['coverage'] <= 0
+                    ? 'Not Started'
+                    : ((!empty($r['end_date']) && strtotime($r['end_date']) < time()) ? 'Behind Schedule' : 'On Track'));
+            $coverageValues[]=$r['coverage'];
+            if ($r['status'] === 'Completed') $stats['completed_courses']++;
+            elseif ($r['status'] === 'Behind Schedule' || $r['status'] === 'Not Started') $stats['attention_courses']++;
+            else $stats['in_progress_courses']++;
+        }
         unset($r);
+        $recentAssignments = array_slice($allAssignments, 0, 8);
         $stats['avg_coverage']=count($coverageValues)?array_sum($coverageValues)/count($coverageValues):0;
     }
 } catch (PDOException $e) {}
@@ -135,6 +177,12 @@ $error = $_SESSION['error'] ?? ''; unset($_SESSION['error']);
 :root{--g950:#003d2a;--g900:#004d36;--g700:#087341;--g:#269d43;--light:#e7f4d9;--gold:#f4b51f;--text:#10251c;--muted:#65756e;--border:#dfe7e2;--bg:#f7f9f8;--white:#fff;--shadow:0 8px 25px rgba(0,55,38,.08)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,"Segoe UI",Arial,sans-serif;color:var(--text);background:var(--bg)}a{text-decoration:none;color:inherit}button,input,select{font:inherit}.layout{display:flex;min-height:100vh}.sidebar{width:250px;position:fixed;inset:0 auto 0 0;background:linear-gradient(180deg,#003e2b,#005037);color:#fff;z-index:20}.brand{height:122px;background:#fff;color:var(--g900);display:flex;align-items:center;padding:13px 18px;gap:12px;border-bottom:1px solid #dce5df}.brand img{width:74px;height:74px;object-fit:contain}.brand-title{font-weight:800;font-size:16px;line-height:1.08}.brand-title span{display:block;font-size:12px;font-weight:600;margin-top:7px}.menu-title{font-size:12px;color:#a9c6b8;letter-spacing:.6px;margin:24px 20px 10px;font-weight:700}.role{padding:0 19px 10px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:10px}.role-badge{width:34px;height:34px;border:2px solid rgba(255,255,255,.7);border-radius:50%;display:grid;place-items:center}.side-link{display:flex;align-items:center;gap:13px;margin:4px 9px;padding:12px 13px;border-radius:8px;font-size:14px;font-weight:600;color:#eaf4ef}.side-link:hover,.side-link.active{background:#51a927;color:#fff}.icon{width:20px;text-align:center;font-size:18px}.side-bottom{position:absolute;bottom:22px;left:0;right:0;text-align:center;color:#9bbbad;font-size:11px}.building{font-size:54px;line-height:1;opacity:.22}.main{margin-left:250px;width:calc(100% - 250px)}.topbar{height:123px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 25px 0 27px}.top-left{display:flex;align-items:center;gap:18px}.mobile-menu{display:none;background:none;border:0;font-size:24px}.heading h1{font-size:26px;margin:0 0 3px;color:#083f2b}.heading p{margin:0;color:var(--muted);font-size:14px}.profile{display:flex;align-items:center;gap:13px}.bell{font-size:22px;color:#063f2c}.avatar{width:48px;height:48px;border-radius:50%;object-fit:cover;border:1px solid #ddd}.profile-text strong{display:block;font-size:14px}.profile-text span{font-size:12px;color:var(--muted)}.content{padding:23px 22px 18px}.filter-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.department{font-size:13px;color:#426057}.department strong{color:#07502f}.select{border:1px solid #ccd8d2;border-radius:6px;background:#fff;padding:10px 13px;min-width:230px;color:#17362a}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:17px;margin-bottom:20px}.card{background:#fff;border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:20px;min-height:140px}.card-top{display:flex;align-items:center;gap:16px}.card-icon{width:57px;height:57px;border-radius:50%;display:grid;place-items:center;background:#e3f1d2;color:#19783b;font-size:25px}.card:nth-child(3) .card-icon{background:#fff0c9;color:#ee9d00}.card-label{font-size:12px;font-weight:700}.card-number{font-size:28px;font-weight:800;margin-top:5px}.card-link{display:flex;justify-content:flex-end;align-items:center;margin-top:15px;color:#07502f;font-size:12px;font-weight:600;gap:9px}.card-link span{font-size:20px}.grid{display:grid;grid-template-columns:1.25fr .95fr;gap:17px;margin-bottom:17px}.panel{background:#fff;border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);overflow:hidden}.panel-head{padding:16px 20px 12px;display:flex;justify-content:space-between;align-items:center}.panel-head h2{font-size:15px;margin:0;color:#07442c}.panel-head p{margin:4px 0 0;color:var(--muted);font-size:11px}.assign-form{padding:0 20px 20px}.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}.field label{display:block;font-size:11px;font-weight:700;margin-bottom:6px;color:#29433a}.field input,.field select{width:100%;padding:10px;border:1px solid #cfdad4;border-radius:6px;background:#fff;outline:none}.field input:focus,.field select:focus{border-color:#27984a;box-shadow:0 0 0 3px rgba(39,152,74,.1)}.full{grid-column:1/-1}.btn{margin-top:14px;background:#278d3e;color:#fff;border:0;border-radius:7px;padding:11px 18px;font-weight:700;cursor:pointer}.btn:hover{background:#197a31}.notice{margin-bottom:16px;padding:11px 14px;border-radius:7px;font-size:13px}.success{background:#e5f4df;color:#276c29;border:1px solid #c7e6c0}.error{background:#ffe5e1;color:#a92e25;border:1px solid #f2c1bb}.empty{padding:25px;text-align:center;color:var(--muted);font-size:12px}.table-wrap{overflow:auto}.data-table{width:100%;border-collapse:collapse;min-width:720px}.data-table th,.data-table td{text-align:left;padding:11px 10px;border-top:1px solid #edf1ef}.data-table th{font-size:10px;background:#fcfdfc}.data-table td{font-size:11px}.data-table td:first-child,.data-table th:first-child{padding-left:20px}.pill{display:inline-block;padding:5px 9px;border-radius:8px;font-size:10px;font-weight:700}.pill.good{background:#e5f3d9;color:#2b7629}.pill.average{background:#fff0c9;color:#bd7900}.pill.low{background:#ffe3df;color:#d4362d}.footer{height:50px;background:#fff;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:11px;color:#40534b}.footer strong{color:#17672e;font-style:italic}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:760px){.sidebar{transform:translateX(-100%);transition:.25s}.sidebar.open{transform:translateX(0)}.main{margin-left:0;width:100%}.mobile-menu{display:block}.topbar{height:auto;min-height:78px;padding:12px 15px}.profile-text{display:none}.content{padding:15px 12px}.cards{grid-template-columns:1fr}.filter-row{display:block}.department{margin-bottom:10px}.select{width:100%}.form-grid{grid-template-columns:1fr}.full{grid-column:auto}.footer{height:auto;flex-direction:column;gap:7px;padding:10px}}
+/* Subtle University branding for the clickable dashboard summary cards. */
+.card{background-color:#fff;background-image:linear-gradient(rgba(255,255,255,.92),rgba(255,255,255,.92)),url('../assets/images/ub-logo.png');background-repeat:no-repeat;background-position:center,right 15px bottom 13px;background-size:auto,76px}
+</style>
+<style>
+.monitoring-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:-5px 0 20px}.monitoring-card{background:#fff;border:1px solid var(--border);border-radius:9px;padding:12px 14px}.monitoring-card span{display:block;color:var(--muted);font-size:10px;font-weight:800}.monitoring-card strong{display:block;color:var(--g900);font-size:20px;margin-top:6px}.monitoring-card.attention{border-left:3px solid #d4362d}.monitoring-card.attention strong{color:#c53030}@media(max-width:760px){.monitoring-cards{grid-template-columns:1fr}}
+.sidebar{overflow-y:auto;overscroll-behavior:contain}.side-bottom{position:static;margin:26px 0 18px;padding-bottom:4px}
 </style>
 </head>
 <body>
@@ -164,6 +212,11 @@ $error = $_SESSION['error'] ?? ''; unset($_SESSION['error']);
 <div class="card"><div class="card-top"><div class="card-icon">⌘</div><div><div class="card-label">COURSE ASSIGNMENTS</div><div class="card-number"><?=number_format($stats['assignments'])?></div></div></div><a class="card-link" href="assignments.php">View assignments <span>›</span></a></div>
 <div class="card"><div class="card-top"><div class="card-icon">◔</div><div><div class="card-label">AVERAGE COVERAGE</div><div class="card-number"><?=number_format($stats['avg_coverage'],1)?>%</div></div></div><a class="card-link" href="coverage.php">Review coverage <span>›</span></a></div>
 </div>
+<div class="monitoring-cards">
+<div class="monitoring-card"><span>COMPLETED COURSES</span><strong><?=number_format($stats['completed_courses'])?></strong></div>
+<div class="monitoring-card"><span>IN PROGRESS</span><strong><?=number_format($stats['in_progress_courses'])?></strong></div>
+<div class="monitoring-card attention"><span>REQUIRES ATTENTION</span><strong><?=number_format($stats['attention_courses'])?></strong></div>
+</div>
 <div class="grid">
 <div class="panel" id="assign-course"><div class="panel-head"><div><h2>ASSIGN COURSE TO LECTURER</h2><p>Only lecturers, courses and programs belonging to your department are available.</p></div></div>
 <?php if(!$departmentId): ?><div class="assign-form"><div class="notice error">Your HOD account has no department assigned. The Administrator must assign a department to this HOD account before course assignment can be used.</div></div><?php else: ?>
@@ -177,8 +230,8 @@ $error = $_SESSION['error'] ?? ''; unset($_SESSION['error']);
 </div><button class="btn" type="submit">＋ Assign Course</button></form><?php endif; ?></div>
 <div class="panel"><div class="panel-head"><div><h2>DEPARTMENT OVERVIEW</h2><p><?=e($departmentName)?></p></div></div><div style="padding:10px 20px 22px"><div style="display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #edf1ef;font-size:12px"><span>Active lecturers</span><strong><?=$stats['lecturers']?></strong></div><div style="display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #edf1ef;font-size:12px"><span>Courses</span><strong><?=$stats['courses']?></strong></div><div style="display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #edf1ef;font-size:12px"><span>Assignments</span><strong><?=$stats['assignments']?></strong></div><div style="display:flex;justify-content:space-between;padding:12px 0;font-size:12px"><span>Average coverage</span><strong><?=number_format($stats['avg_coverage'],1)?>%</strong></div></div></div>
 </div>
-<div class="panel"><div class="panel-head"><h2>RECENT COURSE ASSIGNMENTS</h2><a class="card-link" style="margin:0" href="assignments.php">View all ›</a></div><div class="table-wrap"><table class="data-table"><thead><tr><th>COURSE</th><th>LECTURER</th><th>PROGRAM</th><th>SESSION</th><th>SEMESTER</th><th>LEVEL</th><th>COVERAGE</th></tr></thead><tbody>
-<?php if($recentAssignments): foreach($recentAssignments as $r): $cv=(float)$r['coverage']; $cls=$cv>=75?'good':($cv>=50?'average':'low'); ?><tr><td><strong><?=e($r['course_code'])?></strong><br><?=e($r['course_name'])?></td><td><?=e($r['lecturer_name'])?><br><span style="color:#788780"><?=e($r['staff_no'])?></span></td><td><?=e($r['program_name'])?></td><td><?=e($r['session_name'])?></td><td><?=e($r['semester'])?></td><td><?=e($r['level'])?></td><td><span class="pill <?=$cls?>"><?=number_format($cv,0)?>%</span></td></tr><?php endforeach; else: ?><tr><td colspan="7" class="empty">No course assignments found for your department.</td></tr><?php endif; ?></tbody></table></div></div>
+<div class="panel"><div class="panel-head"><h2>RECENT COURSE ASSIGNMENTS</h2><a class="card-link" style="margin:0" href="assignments.php">View all ›</a></div><div class="table-wrap"><table class="data-table"><thead><tr><th>COURSE</th><th>LECTURER</th><th>PROGRAM</th><th>SESSION</th><th>SEMESTER</th><th>LEVEL</th><th>PROGRESS</th><th>STATUS</th></tr></thead><tbody>
+<?php if($recentAssignments): foreach($recentAssignments as $r): $cv=(float)$r['coverage']; $cls=$cv>=75?'good':($cv>=50?'average':'low'); $statusClass=$r['status']==='Completed'?'good':($r['status']==='On Track'?'average':'low'); ?><tr><td><strong><?=e($r['course_code'])?></strong><br><?=e($r['course_name'])?></td><td><?=e($r['lecturer_name'])?><br><span style="color:#788780"><?=e($r['staff_no'])?></span></td><td><?=e($r['program_name'])?></td><td><?=e($r['session_name'])?></td><td><?=e($r['semester'])?></td><td><?=e($r['level'])?></td><td><span class="pill <?=$cls?>"><?=number_format($cv,0)?>%</span></td><td><span class="pill <?=$statusClass?>"><?=e($r['status'])?></span></td></tr><?php endforeach; else: ?><tr><td colspan="8" class="empty">No course assignments found for your department.</td></tr><?php endif; ?></tbody></table></div></div>
 </section><footer class="footer"><span>© <?=date('Y')?> Course Coverage Management System. All Rights Reserved.</span><strong>HTTTC KUMBA - Excellence in Professional Training</strong></footer>
 </main></div>
 </body></html>

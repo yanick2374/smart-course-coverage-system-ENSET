@@ -13,6 +13,7 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $user_id = (int) $_SESSION['user_id'];
+$lecturer_email = trim($_SESSION['email'] ?? '');
 
 $role = strtolower(trim($_SESSION['role'] ?? ''));
 
@@ -61,11 +62,11 @@ try {
         FROM lecturers l
         LEFT JOIN departments d
             ON d.department_id = l.department_id
-        WHERE l.user_id = ?
+        WHERE LOWER(TRIM(l.email)) = LOWER(TRIM(?))
         LIMIT 1
     ");
 
-    $stmt->execute([$user_id]);
+    $stmt->execute([$lecturer_email]);
 
     $lecturer = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -123,29 +124,41 @@ try {
             p.program_name,
 
             a.session_name,
+            a.start_date,
+            a.end_date,
 
-            COUNT(
-                DISTINCT ct.topic_id
-            ) AS total_topics,
+            COALESCE((SELECT COUNT(*)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = ca.course_id), 0) AS total_topics,
 
-            COUNT(
-                DISTINCT CASE
-                    WHEN cc.status = 'Completed'
-                    THEN cc.coverage_id
-                END
-            ) AS completed_topics,
+            COALESCE((SELECT COUNT(*)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = ca.course_id
+                        AND ct.expected_hours > 0
+                        AND (SELECT COALESCE(SUM(cc.hours_taught), 0)
+                             FROM course_coverage cc
+                             WHERE cc.assignment_id = ca.assignment_id
+                               AND cc.topic_id = ct.topic_id) >= ct.expected_hours), 0) AS completed_topics,
 
-            COUNT(
-                DISTINCT CASE
-                    WHEN cc.status = 'In Progress'
-                    THEN cc.coverage_id
-                END
-            ) AS in_progress_topics,
+            COALESCE((SELECT COUNT(*)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = ca.course_id
+                        AND (SELECT COALESCE(SUM(cc.hours_taught), 0)
+                             FROM course_coverage cc
+                             WHERE cc.assignment_id = ca.assignment_id
+                               AND cc.topic_id = ct.topic_id) > 0
+                        AND (SELECT COALESCE(SUM(cc.hours_taught), 0)
+                             FROM course_coverage cc
+                             WHERE cc.assignment_id = ca.assignment_id
+                               AND cc.topic_id = ct.topic_id) < ct.expected_hours), 0) AS in_progress_topics,
 
-            COALESCE(
-                SUM(cc.hours_taught),
-                0
-            ) AS hours_taught
+            COALESCE((SELECT SUM(ct.expected_hours)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = ca.course_id), 0) AS expected_hours,
+
+            COALESCE((SELECT SUM(cc.hours_taught)
+                      FROM course_coverage cc
+                      WHERE cc.assignment_id = ca.assignment_id), 0) AS hours_taught
 
         FROM course_assgnment ca
 
@@ -158,29 +171,7 @@ try {
         LEFT JOIN academic_session a
             ON a.session_id = ca.session_id
 
-        LEFT JOIN cousre_topics ct
-            ON ct.course_id = ca.course_id
-
-        LEFT JOIN course_coverage cc
-            ON cc.assignment_id = ca.assignment_id
-
         WHERE ca.lecturer_id = :lecturer_id
-
-        GROUP BY
-
-            ca.assignment_id,
-            ca.course_id,
-            ca.program_id,
-            ca.session_id,
-            ca.semester,
-            ca.level,
-
-            c.course_code,
-            c.course_name,
-
-            p.program_name,
-
-            a.session_name
 
         ORDER BY
             c.course_code ASC
@@ -218,6 +209,8 @@ $total_in_progress = 0;
 
 $total_hours = 0;
 
+$total_expected_hours = 0;
+
 
 foreach ($courses as $course) {
 
@@ -232,6 +225,23 @@ foreach ($courses as $course) {
 
     $total_hours +=
         (float)$course['hours_taught'];
+
+    $total_expected_hours +=
+        (float)$course['expected_hours'];
+
+    $course['remaining_topics'] = max(
+        0,
+        (int)$course['total_topics'] - (int)$course['completed_topics']
+    );
+
+    $course['remaining_hours'] = max(
+        0,
+        (float)$course['expected_hours'] - (float)$course['hours_taught']
+    );
+
+    $course['progress'] = (float)$course['expected_hours'] > 0
+        ? min(100, max(0, ((float)$course['hours_taught'] / (float)$course['expected_hours']) * 100))
+        : 0;
 }
 
 
@@ -239,10 +249,10 @@ foreach ($courses as $course) {
    OVERALL PROGRESS
 ========================================================= */
 
-if ($total_topics > 0) {
+if ($total_expected_hours > 0) {
 
     $overall_progress =
-        ($total_completed / $total_topics) * 100;
+        ($total_hours / $total_expected_hours) * 100;
 
 } else {
 
@@ -892,7 +902,7 @@ body {
     display: grid;
 
     grid-template-columns:
-        repeat(3, 1fr);
+        repeat(4, 1fr);
 
     gap: 8px;
 
@@ -1469,7 +1479,7 @@ $in_progress =
 if ($total > 0) {
 
     $percentage =
-        ($completed / $total) * 100;
+        (float)($course['progress'] ?? 0);
 
 } else {
 
@@ -1495,21 +1505,33 @@ if ($percentage >= 100) {
     $status_class =
         "completed";
 
-} elseif ($percentage > 0) {
-
-    $status_text =
-        "In Progress";
-
-    $status_class =
-        "progressing";
-
-} else {
+} elseif ($percentage <= 0) {
 
     $status_text =
         "Not Started";
 
     $status_class =
         "not-started";
+
+} elseif (
+    !empty($course['end_date']) &&
+    strtotime($course['end_date']) < time()
+) {
+
+    $status_text =
+        "Behind Schedule";
+
+    $status_class =
+        "progressing";
+
+} elseif ($percentage > 0) {
+
+    $status_text =
+        "On Track";
+
+    $status_class =
+        "progressing";
+
 }
 
 ?>
@@ -1643,6 +1665,19 @@ Topics
 <div class="course-stat">
 
 <small>
+Remaining
+</small>
+
+<strong>
+<?=e($course['remaining_topics'])?>
+</strong>
+
+</div>
+
+
+<div class="course-stat">
+
+<small>
 Completed
 </small>
 
@@ -1661,11 +1696,24 @@ Hours
 
 <strong>
 <?=e(
-    number_format(
+        number_format(
         (float)$course['hours_taught'],
         1
     )
 )?>
+</strong>
+
+</div>
+
+
+<div class="course-stat">
+
+<small>
+Hours Left
+</small>
+
+<strong>
+<?=e(number_format((float)$course['remaining_hours'], 1))?>
 </strong>
 
 </div>
@@ -1690,13 +1738,13 @@ Hours
 <div class="course-footer">
 
 <a
-    href="course_topics.php?assignment_id=<?=e(
+    href="coverage.php?assignment_id=<?=e(
         $course['assignment_id']
     )?>"
     class="view-btn"
 >
 
-View Course
+View Progress
 
 </a>
 

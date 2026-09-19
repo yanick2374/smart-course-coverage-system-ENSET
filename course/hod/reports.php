@@ -168,21 +168,26 @@ try {
             a.session_id,
             a.session_name,
 
-            COUNT(DISTINCT ct.topic_id)
-                AS total_topics,
+            COALESCE((SELECT COUNT(*)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = c.course_id), 0) AS total_topics,
 
-            COUNT(DISTINCT cc.coverage_id)
-                AS covered_topics,
+            COALESCE((SELECT COUNT(*)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = c.course_id
+                        AND ct.expected_hours > 0
+                        AND (SELECT COALESCE(SUM(cc2.hours_taught), 0)
+                             FROM course_coverage cc2
+                             WHERE cc2.assignment_id = ca.assignment_id
+                               AND cc2.topic_id = ct.topic_id) >= ct.expected_hours), 0) AS covered_topics,
 
-            COALESCE(
-                SUM(cc.hours_taught),
-                0
-            ) AS hours_taught,
+            COALESCE((SELECT SUM(cc.hours_taught)
+                      FROM course_coverage cc
+                      WHERE cc.assignment_id = ca.assignment_id), 0) AS hours_taught,
 
-            COALESCE(
-                SUM(ct.expected_hours),
-                0
-            ) AS expected_hours
+            COALESCE((SELECT SUM(ct.expected_hours)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = c.course_id), 0) AS expected_hours
 
         FROM courses c
 
@@ -197,13 +202,6 @@ try {
 
         INNER JOIN academic_session a
             ON a.session_id = ca.session_id
-
-        LEFT JOIN cousre_topics ct
-            ON ct.course_id = c.course_id
-
-        LEFT JOIN course_coverage cc
-            ON cc.assignment_id = ca.assignment_id
-            AND cc.topic_id = ct.topic_id
 
         WHERE c.department_id = :department_id
 
@@ -260,26 +258,6 @@ try {
 
 
     $sql .= "
-
-        GROUP BY
-
-            c.course_id,
-            c.course_code,
-            c.course_name,
-
-            ca.assignment_id,
-            ca.semester,
-            ca.level,
-
-            l.lecturer_id,
-            l.full_name,
-            l.staff_no,
-
-            p.program_id,
-            p.program_name,
-
-            a.session_id,
-            a.session_name
 
         ORDER BY
             c.course_code ASC,
@@ -359,6 +337,27 @@ $coverage_percentage =
             1
         )
     );
+
+// Human-readable filter values are kept with the report so both the screen and
+// printed copy clearly show the scope of the figures being reviewed.
+$selected_session_label = 'All academic years';
+foreach ($academic_sessions as $academic_session) {
+    if ($session_id === (int)$academic_session['session_id']) {
+        $selected_session_label = $academic_session['session_name'];
+        break;
+    }
+}
+
+$selected_program_label = 'All programs';
+foreach ($programs as $program) {
+    if ($program_id === (int)$program['program_id']) {
+        $selected_program_label = $program['program_name'];
+        break;
+    }
+}
+
+$selected_semester_label = $semester !== '' ? $semester : 'All semesters';
+$report_generated_at = date('d M Y, h:i A');
 
 
 ?>
@@ -836,18 +835,114 @@ body {
 .filters {
 
     padding:
-        15px 20px;
-
-    border-bottom:
-        1px solid #e8eeeb;
+        20px;
 
     display: flex;
 
-    gap: 8px;
+    gap: 12px;
 
-    flex-wrap: wrap;
+    align-items: end;
 }
 
+.report-generator {
+
+    border-color: #dce9e1;
+}
+
+.report-generator .panel-header {
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: space-between;
+
+    gap: 18px;
+
+    background: linear-gradient(110deg, #ffffff 0%, #f1f8f4 100%);
+}
+
+.report-header-intro {
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 11px;
+}
+
+.report-logo {
+
+    width: 38px;
+
+    height: 38px;
+
+    flex: 0 0 38px;
+
+    object-fit: contain;
+
+    padding: 3px;
+
+    border: 1px solid #d8e9df;
+
+    border-radius: 50%;
+
+    background: #ffffff;
+}
+
+.report-generator .panel-header h3 {
+
+    font-size: 13px;
+}
+
+.report-label {
+
+    display: inline-flex;
+
+    align-items: center;
+
+    min-height: 25px;
+
+    padding: 0 10px;
+
+    border-radius: 99px;
+
+    background: #e3f2e9;
+
+    color: #0b5d3b;
+
+    font-size: 9px;
+
+    font-weight: 800;
+
+    letter-spacing: .3px;
+
+    text-transform: uppercase;
+}
+
+.filter-field {
+
+    flex: 1 1 180px;
+
+    min-width: 0;
+}
+
+.filter-field label {
+
+    display: block;
+
+    margin: 0 0 6px 2px;
+
+    color: #65776e;
+
+    font-size: 9px;
+
+    font-weight: 800;
+
+    letter-spacing: .55px;
+
+    text-transform: uppercase;
+}
 
 .filters select {
 
@@ -856,8 +951,9 @@ body {
 
     border-radius: 7px;
 
-    padding:
-        9px 10px;
+    width: 100%;
+
+    padding: 10px 32px 10px 11px;
 
     font-size: 10px;
 
@@ -865,7 +961,9 @@ body {
 
     background: #ffffff;
 
-    min-width: 160px;
+    min-width: 0;
+
+    color: #244337;
 }
 
 
@@ -877,8 +975,9 @@ body {
 
     color: #ffffff;
 
-    padding:
-        9px 15px;
+    min-height: 37px;
+
+    padding: 9px 17px;
 
     border-radius: 7px;
 
@@ -887,6 +986,16 @@ body {
     font-weight: 700;
 
     cursor: pointer;
+
+    box-shadow: 0 5px 10px rgba(11,93,59,.16);
+
+    white-space: nowrap;
+}
+
+.filter-btn:hover,
+.print-btn:hover {
+
+    background: #08482e;
 }
 
 
@@ -898,14 +1007,62 @@ body {
 
     text-decoration: none;
 
-    padding:
-        9px 13px;
+    min-height: 37px;
+
+    padding: 9px 13px;
 
     border-radius: 7px;
 
     font-size: 10px;
 
     font-weight: 700;
+
+    display: inline-flex;
+
+    align-items: center;
+
+    white-space: nowrap;
+}
+
+.report-scope {
+
+    display: flex;
+
+    align-items: center;
+
+    flex-wrap: wrap;
+
+    gap: 8px;
+
+    margin: 0 20px 20px;
+
+    padding: 12px 14px;
+
+    border: 1px solid #e4ede7;
+
+    border-radius: 8px;
+
+    background: #f9fcfa;
+
+    color: #687871;
+
+    font-size: 10px;
+}
+
+.report-scope strong {
+
+    color: #244337;
+}
+
+.scope-divider {
+
+    width: 4px;
+
+    height: 4px;
+
+    border-radius: 50%;
+
+    background: #94aaa0;
 }
 
 
@@ -1189,6 +1346,13 @@ tbody td:first-child {
 
 @media print {
 
+    @page {
+
+        size: A4 landscape;
+
+        margin: 12mm;
+    }
+
     .sidebar,
     .topbar,
     .filters,
@@ -1215,6 +1379,23 @@ tbody td:first-child {
     .panel {
 
         box-shadow: none;
+
+        break-inside: avoid;
+    }
+
+    .report-generator {
+
+        border-color: #d7e4dc;
+    }
+
+    .report-scope {
+
+        margin: 12px 20px 16px;
+    }
+
+    table {
+
+        min-width: 0;
     }
 }
 
@@ -1260,6 +1441,31 @@ tbody td:first-child {
     .stats {
 
         grid-template-columns: 1fr;
+    }
+
+    .report-generator .panel-header {
+
+        align-items: flex-start;
+
+        flex-direction: column;
+    }
+
+    .filters {
+
+        align-items: stretch;
+
+        flex-direction: column;
+    }
+
+    .filter-field {
+
+        flex-basis: auto;
+    }
+
+    .filter-btn,
+    .clear-btn {
+
+        justify-content: center;
     }
 }
 
@@ -1600,10 +1806,16 @@ Coverage Rate
      REPORT FILTERS
 ===================================================== -->
 
-<div class="panel">
+<div class="panel report-generator">
 
 
 <div class="panel-header">
+
+<div class="report-header-intro">
+
+<img class="report-logo" src="../assets/images/ub-logo.png" alt="University of Buea logo">
+
+<div class="panel-title">
 
 <h3>
 GENERATE REPORT
@@ -1615,14 +1827,23 @@ Select the academic year, semester or program you want to review.
 
 </div>
 
+</div>
+
+<span class="report-label">Report filters</span>
+
+</div>
 
 <form
     method="GET"
     class="filters"
 >
 
+<div class="filter-field">
 
-<select name="session_id">
+<label for="session_id">Academic year</label>
+
+
+<select name="session_id" id="session_id">
 
 <option value="">
 All Academic Years
@@ -1658,8 +1879,15 @@ All Academic Years
 
 </select>
 
+</div>
 
-<select name="semester">
+
+<div class="filter-field">
+
+<label for="semester">Semester</label>
+
+
+<select name="semester" id="semester">
 
 <option value="">
 All Semesters
@@ -1718,8 +1946,15 @@ Summer Semester
 
 </select>
 
+</div>
 
-<select name="program_id">
+
+<div class="filter-field">
+
+<label for="program_id">Program</label>
+
+
+<select name="program_id" id="program_id">
 
 <option value="">
 All Programs
@@ -1755,6 +1990,8 @@ All Programs
 
 </select>
 
+</div>
+
 
 <button
     type="submit"
@@ -1777,6 +2014,28 @@ Clear
 
 
 </form>
+
+<div class="report-scope">
+
+<strong>Current report scope</strong>
+
+<span class="scope-divider"></span>
+
+<span><?=e($selected_session_label)?></span>
+
+<span class="scope-divider"></span>
+
+<span><?=e($selected_semester_label)?></span>
+
+<span class="scope-divider"></span>
+
+<span><?=e($selected_program_label)?></span>
+
+<span class="scope-divider"></span>
+
+<span>Prepared <?=e($report_generated_at)?></span>
+
+</div>
 
 
 </div>

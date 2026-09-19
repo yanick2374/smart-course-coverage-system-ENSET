@@ -1,12 +1,9 @@
 <?php
 session_start();
-require_once __DIR__ . '/../config/database.php';
-$title = basename($_SERVER['PHP_SELF'], '.php');
-?>
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title><?= htmlspecialchars(ucwords(str_replace('_',' ',$title))) ?></title>
-<link rel="stylesheet" href="../assets/css/style.css"></head>
-<body><div style="padding:40px;font-family:Arial">
-<a href="dashboard.php">← Back to Dashboard</a><h1><?= htmlspecialchars(ucwords(str_replace('_',' ',$title))) ?></h1>
-<p>This page is a placeholder. The dashboard is fully connected to the supplied database schema; this module can be implemented next.</p>
-</div></body></html>
+if(empty($_SESSION['logged_in'])||!in_array(strtolower(trim($_SESSION['role']??'')),['hod','head of department'],true)){header('Location: ../index.php');exit;}
+require_once __DIR__.'/../config/database.php'; require_once __DIR__.'/../config/profile_photos.php';
+function e($v):string{return htmlspecialchars((string)$v,ENT_QUOTES,'UTF-8');}
+$id=(int)($_SESSION['user_id']??0);$error='';$success='';
+if($_SERVER['REQUEST_METHOD']==='POST'){try{saveProfilePhoto($_FILES['profile_photo']??[],$id);$success='Profile photo updated successfully.';}catch(RuntimeException $x){$error=$x->getMessage();}}
+$q=$pdo->prepare('SELECT u.full_name,u.email,u.status,d.department_name FROM users u LEFT JOIN departments d ON d.department_id=u.department_id WHERE u.user_id=?');$q->execute([$id]);$p=$q->fetch(PDO::FETCH_ASSOC)?:['full_name'=>$_SESSION['full_name']??'Head of Department','email'=>$_SESSION['email']??'','status'=>'active','department_name'=>'Not assigned'];$photo=profilePhotoUrl($id);$initials=strtoupper(substr(preg_replace('/[^A-Za-z]/','',$p['full_name']),0,2));
+?><!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HOD Profile</title><style>body{margin:0;background:#f5f8f6;color:#18372b;font:14px Arial}.page{max-width:760px;margin:55px auto;padding:0 20px}.back{color:#07502f;text-decoration:none;font-weight:bold}.card{margin-top:18px;background:#fff;border:1px solid #dfe7e2;border-radius:14px;overflow:hidden}.head{padding:28px;display:flex;gap:18px;align-items:center;background:#f0f8ee}.avatar{width:92px;height:92px;border-radius:50%;display:grid;place-items:center;background:#087341;color:#fff;font-size:28px;font-weight:bold;background-size:cover;background-position:center}.body{padding:26px}.notice{padding:12px;border-radius:8px;margin-bottom:16px}.success{background:#eaf7ed;color:#26713b}.error{background:#fff0ee;color:#a12b22}.upload{margin-top:22px;padding-top:22px;border-top:1px solid #edf2ee}.upload input{display:block;margin:10px 0}.btn{border:0;border-radius:7px;background:#0b5d3b;color:#fff;padding:11px 16px;font-weight:bold;cursor:pointer}</style></head><body><main class="page"><a class="back" href="dashboard.php">&larr; Back to Dashboard</a><div class="card"><div class="head"><div class="avatar"<?= $photo?' style="background-image:url(\''.e($photo).'\')"':'' ?>><?= $photo?'':e($initials?:'HD') ?></div><div><h1><?=e($p['full_name'])?></h1><p>Head of Department · <?=e($p['department_name'])?></p></div></div><div class="body"><?php if($success):?><div class="notice success"><?=e($success)?></div><?php endif;?><?php if($error):?><div class="notice error"><?=e($error)?></div><?php endif;?><p><b>Email:</b> <?=e($p['email'])?></p><p><b>Account status:</b> <?=e(ucfirst($p['status']))?></p><form class="upload" method="post" enctype="multipart/form-data"><h2>Profile Photo</h2><p>Use a clear photo so staff can identify you.</p><input name="profile_photo" type="file" accept="image/jpeg,image/png,image/webp" required><small>JPEG, PNG, or WebP; maximum 2 MB.</small><p><button class="btn">Upload Photo</button></p></form></div></div></main></body></html>

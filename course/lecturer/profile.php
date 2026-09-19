@@ -39,6 +39,7 @@ if (
 
 
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/profile_photos.php';
 
 
 /*
@@ -69,6 +70,8 @@ $loginEmail = trim(
 
 $sessionName =
     $_SESSION['full_name'] ?? 'Lecturer';
+
+$userId = (int)($_SESSION['user_id'] ?? 0);
 
 
 /*
@@ -236,6 +239,11 @@ if (
 
             try {
 
+                if ($userId <= 0) {
+                    throw new RuntimeException('Unable to identify your user account for the photo upload.');
+                }
+                saveProfilePhoto($_FILES['profile_photo'] ?? [], $userId);
+
                 $stmt = $pdo->prepare("
                     UPDATE lecturers
 
@@ -313,10 +321,12 @@ if (
 
                 $editMode = false;
 
-            } catch (PDOException $e) {
+            } catch (RuntimeException | PDOException $e) {
 
                 $error =
-                    'Unable to update your profile. Please try again.';
+                    $e instanceof RuntimeException
+                        ? $e->getMessage()
+                        : 'Unable to update your profile. Please try again.';
             }
         }
     }
@@ -412,6 +422,8 @@ foreach (
             );
     }
 }
+
+$photoUrl = $userId > 0 ? profilePhotoUrl($userId) : null;
 
 ?>
 
@@ -1811,6 +1823,7 @@ input{
             <form
                 method="POST"
                 action="profile.php"
+                enctype="multipart/form-data"
             >
 
 
@@ -1955,6 +1968,16 @@ input{
                 </div>
 
 
+
+                <div class="form-field">
+
+                    <label for="profile_photo">PROFILE PHOTO</label>
+
+                    <input id="profile_photo" type="file" name="profile_photo" accept="image/jpeg,image/png,image/webp">
+
+                    <div class="form-help">JPEG, PNG, or WebP image; maximum 5 MB.</div>
+
+                </div>
 
                 <!-- FORM ACTIONS -->
 
@@ -2240,6 +2263,15 @@ input{
 </div>
 
 
+<script>
+const profilePhoto = <?=json_encode($photoUrl)?>;
+if (profilePhoto) document.querySelectorAll('.avatar-large,.avatar-small').forEach((avatar) => {
+    avatar.textContent = '';
+    avatar.style.backgroundImage = `url("${profilePhoto}")`;
+    avatar.style.backgroundSize = 'cover';
+    avatar.style.backgroundPosition = 'center';
+});
+</script>
 </body>
 
 </html>

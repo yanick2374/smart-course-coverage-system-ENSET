@@ -20,10 +20,16 @@ $stats = [
     'lecturers' => 0,
     'courses' => 0,
     'departments' => 0,
+    'programs' => 0,
+    'hods' => 0,
     'assignments' => 0,
+    'completed_courses' => 0,
+    'in_progress_courses' => 0,
+    'attention_courses' => 0,
     'avg_coverage' => 0,
 ];
 $coverageRows = [];
+$coverageChart = [];
 $statusCounts = ['Excellent' => 0, 'Good' => 0, 'Average' => 0, 'Poor' => 0];
 $recentUsers = [];
 $alerts = [];
@@ -34,6 +40,13 @@ try {
     $stats['lecturers'] = (int)$pdo->query("SELECT COUNT(*) FROM lecturers WHERE LOWER(status) = 'active' OR status = ''")->fetchColumn();
     $stats['courses'] = (int)$pdo->query("SELECT COUNT(*) FROM courses")->fetchColumn();
     $stats['departments'] = (int)$pdo->query("SELECT COUNT(*) FROM departments")->fetchColumn();
+        $stats['programs'] = (int)$pdo->query("SELECT COUNT(*) FROM programs")->fetchColumn();
+        $hodStmt = $pdo->query("SELECT COUNT(*)
+                                                        FROM users u
+                                                        INNER JOIN roles r ON r.role_id = u.role_id
+                                                        WHERE LOWER(r.role_name) IN ('hod', 'head of department')
+                                                            AND LOWER(u.status) = 'active'");
+        $stats['hods'] = (int)$hodStmt->fetchColumn();
     $stats['assignments'] = (int)$pdo->query("SELECT COUNT(*) FROM course_assgnment")->fetchColumn();
 
     // Coverage is calculated from hours taught against the expected hours of each course's topics.
@@ -43,15 +56,17 @@ try {
             c.course_code,
             c.course_name,
             l.full_name AS lecturer_name,
-            COALESCE(SUM(DISTINCT ct.expected_hours), 0) AS expected_hours,
+            s.end_date,
+            COALESCE((SELECT SUM(ct.expected_hours)
+                      FROM cousre_topics ct
+                      WHERE ct.course_id = ca.course_id), 0) AS expected_hours,
             COALESCE((SELECT SUM(cc2.hours_taught)
                       FROM course_coverage cc2
                       WHERE cc2.assignment_id = ca.assignment_id), 0) AS taught_hours
         FROM course_assgnment ca
         INNER JOIN courses c ON c.course_id = ca.course_id
         LEFT JOIN lecturers l ON l.lecturer_id = ca.lecturer_id
-        LEFT JOIN cousre_topics ct ON ct.course_id = c.course_id
-        GROUP BY ca.assignment_id, c.course_code, c.course_name, l.full_name
+        LEFT JOIN academic_session s ON s.session_id = ca.session_id
         ORDER BY c.course_code ASC
     ";
     $coverageRows = $pdo->query($coverageSql)->fetchAll();
@@ -61,7 +76,22 @@ try {
         $expected = (float)$row['expected_hours'];
         $taught = (float)$row['taught_hours'];
         $row['coverage'] = $expected > 0 ? min(100, max(0, ($taught / $expected) * 100)) : 0;
+        $row['status'] = $row['coverage'] >= 100
+            ? 'Completed'
+            : (($row['coverage'] <= 0) ? 'Not Started' : ((
+                !empty($row['end_date']) && strtotime($row['end_date']) < time()
+            ) ? 'Behind Schedule' : 'On Track'));
         $coverageValues[] = $row['coverage'];
+
+        if ($row['status'] === 'Completed') {
+            $stats['completed_courses']++;
+        } elseif ($row['status'] === 'Not Started') {
+            $stats['attention_courses']++;
+        } elseif ($row['status'] === 'Behind Schedule') {
+            $stats['attention_courses']++;
+        } else {
+            $stats['in_progress_courses']++;
+        }
     }
     unset($row);
 
@@ -99,7 +129,6 @@ try {
 } catch (PDOException $ex) {
     // Keep the interface available even if an optional dashboard query fails.
 }
-$coverageChart = [];
 $chartMax = max(100, ...array_map(fn($r) => (float)$r['coverage'], $coverageChart ?: [['coverage' => 0]]));
 $totalStatus = max(1, array_sum($statusCounts));
 $excellentPct = round(($statusCounts['Excellent'] / $totalStatus) * 100, 1);
@@ -132,12 +161,16 @@ a{text-decoration:none;color:inherit}button{font:inherit;border:0;background:non
 .main{margin-left:250px;width:calc(100% - 250px);min-width:0}.topbar{height:123px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 25px 0 27px}.top-left{display:flex;align-items:center;gap:18px}.mobile-menu{display:none;font-size:24px}.heading h1{font-size:26px;margin:0 0 3px;color:#083f2b}.heading p{margin:0;color:var(--muted);font-size:14px}.profile{display:flex;align-items:center;gap:13px}.bell{font-size:23px;position:relative;margin-right:6px;color:#063f2c}.bell::after{content:'3';position:absolute;top:-7px;right:-8px;background:#1c8036;color:#fff;width:17px;height:17px;border-radius:50%;font-size:10px;display:grid;place-items:center;font-weight:700}.avatar{width:48px;height:48px;border-radius:50%;object-fit:cover;border:1px solid #ddd;background:#eaf0ec}.profile-text{line-height:1.2}.profile-text strong{display:block;font-size:14px}.profile-text span{font-size:12px;color:var(--muted)}.profile-arrow{font-size:18px;margin-left:10px}
 .content{padding:23px 22px 18px;position:relative}.watermark{position:absolute;right:28%;top:40px;width:510px;height:510px;opacity:.045;pointer-events:none}.filter-row{display:flex;justify-content:flex-end;margin-bottom:22px}.select{border:1px solid #ccd8d2;border-radius:6px;background:#fff;padding:10px 13px;min-width:245px;color:#17362a;font-size:13px;outline:none}
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:17px;margin-bottom:20px}.card{background:#fff;border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:22px 20px 17px;min-height:145px}.card-top{display:flex;align-items:center;gap:16px}.card-icon{width:57px;height:57px;border-radius:50%;display:grid;place-items:center;background:#e3f1d2;color:#19783b;font-size:25px}.card:nth-child(3) .card-icon{background:#fff0c9;color:#ee9d00}.card-label{font-size:13px;color:#202a26;font-weight:600}.card-number{font-size:28px;font-weight:800;margin-top:5px;letter-spacing:.2px}.card-link{display:flex;justify-content:flex-end;align-items:center;margin-top:16px;color:#07502f;font-size:13px;font-weight:600;gap:12px}.card-link span{font-size:22px}
+.monitoring-cards{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:-5px 0 20px}.monitoring-card{background:#fff;border:1px solid var(--border);border-radius:9px;padding:12px 13px;min-width:0}.monitoring-card span{display:block;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.4px}.monitoring-card strong{display:block;color:var(--green-900);font-size:19px;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.monitoring-card.attention{border-left:3px solid #e4372d}.monitoring-card.attention strong{color:#c53030}.session-value{font-size:12px!important}
 .grid-main{display:grid;grid-template-columns:1.43fr .88fr;gap:17px;margin-bottom:14px}.panel{background:#fff;border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);overflow:hidden}.panel-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px 12px}.panel-head h2{font-size:15px;margin:0;color:#07442c}.panel-head .small-select{border:1px solid #d5ded9;padding:8px 10px;border-radius:6px;font-size:12px;background:#fff}.chart-wrap{height:278px;padding:8px 20px 17px 27px;display:flex;align-items:stretch;gap:14px}.y-axis{width:26px;display:flex;flex-direction:column;justify-content:space-between;padding:7px 0 29px;font-size:11px;color:#3d4e47;text-align:right}.chart-area{flex:1;position:relative;padding:5px 5px 32px;border-bottom:1px solid #cfd8d3}.gridline{position:absolute;left:0;right:0;border-top:1px solid #e6ece8}.g100{top:5px}.g80{top:25%}.g60{top:45%}.g40{top:65%}.g20{top:85%}.bars{height:100%;display:flex;align-items:flex-end;justify-content:space-around;position:relative;z-index:2}.bar-group{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-width:70px}.bar-value{font-size:12px;font-weight:600;margin-bottom:7px}.bar{width:42px;background:#197d2c;border-radius:3px 3px 0 0;min-height:3px}.bar-label{font-size:12px;margin-top:8px;white-space:nowrap;color:#263d34}.x-title{position:absolute;bottom:-30px;left:0;right:0;text-align:center;font-size:12px;color:#27443a}
 .status-body{height:278px;display:flex;align-items:center;justify-content:center;gap:22px;padding:5px 20px 17px}.donut{width:190px;height:190px;border-radius:50%;background:conic-gradient(#2f8d28 0 <?=$excellentPct?>%,#2f6db0 <?=$excellentPct?>% <?=$excellentPct + $goodPct?>%,#f7ad12 <?=$excellentPct + $goodPct?>% <?=$excellentPct + $goodPct + $averagePct?>%,#e4372d <?=$excellentPct + $goodPct + $averagePct?>% 100%);position:relative;flex:none}.donut::after{content:'';position:absolute;inset:42px;background:#fff;border-radius:50%}.donut-center{position:absolute;z-index:2;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}.donut-center strong{font-size:25px}.donut-center span{font-size:12px}.legend{font-size:12px;line-height:1.7}.legend-row{display:flex;align-items:center;gap:10px;margin:8px 0;white-space:nowrap}.swatch{width:13px;height:13px;border-radius:2px}.legend .value{margin-left:auto;padding-left:12px}.swatch.excellent{background:#2f8d28}.swatch.good{background:#2f6db0}.swatch.average{background:#f7ad12}.swatch.poor{background:#e4372d}
 .bottom-grid{display:grid;grid-template-columns:1.43fr .88fr;gap:17px}.table-wrap{overflow:auto}.data-table{width:100%;border-collapse:collapse;font-size:12px}.data-table th,.data-table td{padding:9px 10px;border-top:1px solid #edf1ef;text-align:left;white-space:nowrap}.data-table th{font-size:11px;color:#172a22;background:#fcfdfc}.data-table td:first-child,.data-table th:first-child{padding-left:20px}.status-pill{display:inline-block;padding:5px 10px;border-radius:8px;font-size:11px;font-weight:600}.status-pill.active,.status-pill.approved{background:#e6f3d8;color:#287626}.status-pill.pending{background:#fff0c9;color:#ef9700}.status-pill.rejected{background:#ffe3df;color:#e13b2f}.coverage-low{color:#e3342a;font-weight:700}.view-all{font-size:12px;color:#07542f}.alert-list{padding:0 20px 10px}.alert-item{display:grid;grid-template-columns:1fr auto;gap:15px;padding:10px 0;border-top:1px solid #edf1ef}.alert-item:first-child{border-top:0}.alert-name{font-size:12px;font-weight:600}.alert-course{font-size:11px;color:#65756e;margin-top:4px}.alert-pct{font-size:12px;color:#e2362b;font-weight:700;align-self:center}
 .footer{height:50px;background:#fff;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:11px;color:#40534b}.footer strong{color:#17672e;font-style:italic}
-@media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.grid-main,.bottom-grid{grid-template-columns:1fr}.status-body{justify-content:flex-start}.sidebar{width:225px}.main{margin-left:225px;width:calc(100% - 225px)}}
-@media(max-width:760px){.sidebar{transform:translateX(-100%);transition:.25s;width:250px}.sidebar.open{transform:translateX(0)}.main{margin-left:0;width:100%}.mobile-menu{display:block}.topbar{height:auto;min-height:78px;padding:12px 15px}.heading h1{font-size:20px}.profile-text,.profile-arrow{display:none}.cards{grid-template-columns:1fr}.content{padding:15px 12px}.filter-row{justify-content:stretch}.select{width:100%}.status-body{flex-direction:column;height:auto;padding:10px 20px 24px}.donut{width:170px;height:170px}.footer{height:auto;gap:8px;flex-direction:column;padding:10px}.table-wrap{font-size:11px}}
+@media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.monitoring-cards{grid-template-columns:repeat(3,1fr)}.grid-main,.bottom-grid{grid-template-columns:1fr}.status-body{justify-content:flex-start}.sidebar{width:225px}.main{margin-left:225px;width:calc(100% - 225px)}}
+@media(max-width:760px){.sidebar{transform:translateX(-100%);transition:.25s;width:250px}.sidebar.open{transform:translateX(0)}.main{margin-left:0;width:100%}.mobile-menu{display:block}.topbar{height:auto;min-height:78px;padding:12px 15px}.heading h1{font-size:20px}.profile-text,.profile-arrow{display:none}.cards,.monitoring-cards{grid-template-columns:1fr}.content{padding:15px 12px}.filter-row{justify-content:stretch}.select{width:100%}.status-body{flex-direction:column;height:auto;padding:10px 20px 24px}.donut{width:170px;height:170px}.footer{height:auto;gap:8px;flex-direction:column;padding:10px}.table-wrap{font-size:11px}}
+/* Subtle University branding for the clickable dashboard summary cards. */
+.card{background-color:#fff;background-image:linear-gradient(rgba(255,255,255,.92),rgba(255,255,255,.92)),url('../assets/images/ub-logo.png');background-repeat:no-repeat;background-position:center,right 15px bottom 13px;background-size:auto,76px}
+.brand-title .brand-smart{margin:0 0 2px;color:#073f2a;font-size:16px;font-weight:800;letter-spacing:0;line-height:1.08}
 </style>
 </head>
 <body>
@@ -145,7 +178,7 @@ a{text-decoration:none;color:inherit}button{font:inherit;border:0;background:non
 <aside class="sidebar" id="sidebar">
     <div class="brand">
         <img src="../assets/images/ub-logo.png" alt="University of Buea">
-        <div class="brand-title">COURSE COVERAGE<span>MANAGEMENT SYSTEM<br>HTTTC KUMBA</span></div>
+        <div class="brand-title"><span class="brand-smart">SMART</span>COURSE COVERAGE<span>MANAGEMENT SYSTEM<br>HTTTC KUMBA</span></div>
     </div>
     <div class="menu-title">USER ROLE</div>
     <div style="padding:0 19px 11px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border:2px solid rgba(255,255,255,.7);border-radius:50%;display:grid;place-items:center">♙</span> Administrator</div>
@@ -191,6 +224,15 @@ a{text-decoration:none;color:inherit}button{font:inherit;border:0;background:non
         <div class="card"><div class="card-top"><div class="card-icon">♟</div><div><div class="card-label">TOTAL LECTURERS</div><div class="card-number"><?=number_format($stats['lecturers'])?></div></div></div><a class="card-link" href="users.php">View lecturers <span>›</span></a></div>
         <div class="card"><div class="card-top"><div class="card-icon">▤</div><div><div class="card-label">TOTAL COURSES</div><div class="card-number"><?=number_format($stats['courses'])?></div></div></div><a class="card-link" href="courses.php">View courses <span>›</span></a></div>
         <div class="card"><div class="card-top"><div class="card-icon">⌘</div><div><div class="card-label">DEPARTMENTS</div><div class="card-number"><?=number_format($stats['departments'])?></div></div></div><a class="card-link" href="departments.php">View departments <span>›</span></a></div>
+    </div>
+
+    <div class="monitoring-cards">
+        <div class="monitoring-card"><span>HODs</span><strong><?=number_format($stats['hods'])?></strong></div>
+        <div class="monitoring-card"><span>PROGRAMS</span><strong><?=number_format($stats['programs'])?></strong></div>
+        <div class="monitoring-card"><span>COMPLETED COURSES</span><strong><?=number_format($stats['completed_courses'])?></strong></div>
+        <div class="monitoring-card"><span>IN PROGRESS</span><strong><?=number_format($stats['in_progress_courses'])?></strong></div>
+        <div class="monitoring-card attention"><span>REQUIRES ATTENTION</span><strong><?=number_format($stats['attention_courses'])?></strong></div>
+        <div class="monitoring-card"><span>ACTIVE SESSION</span><strong class="session-value"><?=e($activeSession)?></strong></div>
     </div>
 
     <div class="grid-main">
